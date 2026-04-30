@@ -1,51 +1,39 @@
-const express = require('express');
-const cors = require('cors');
-const dotenv = require('dotenv');
-const mongoose = require('mongoose');
-const bcrypt = require('bcryptjs');
-const { v4: uuidv4 } = require('uuid');
-const axios = require('axios');
+const express = require("express");
+const cors = require("cors");
+const dotenv = require("dotenv");
+const mongoose = require("mongoose");
+const bcrypt = require("bcryptjs");
+const { v4: uuidv4 } = require("uuid");
+const axios = require("axios");
 
 dotenv.config();
+
 const app = express();
 
-// ================= CORS (FIXED) =================
-const allowedOrigins = [
-  "http://localhost:3000",
-  "https://pas-reset.netlify.app"
-];
-
+// ================= CORS =================
 app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
-    return callback(null, true); // dev mode open
-  }
+  origin: ["http://localhost:3000", "https://pas-reset.netlify.app"],
+  credentials: true
 }));
 
 app.use(express.json());
 
-// ================= DB =================
-mongoose.connect(process.env.MONGODB_URI)
-  .then(() => console.log("✅ MongoDB Connected"))
-  .catch(err => console.log("❌ Mongo Error:", err));
-
 // ================= MODELS =================
-const User = mongoose.model('User', new mongoose.Schema({
+const User = mongoose.model("User", new mongoose.Schema({
   email: String,
   password: String
 }));
 
-const ResetToken = mongoose.model('ResetToken', new mongoose.Schema({
+const ResetToken = mongoose.model("ResetToken", new mongoose.Schema({
   userId: mongoose.Schema.Types.ObjectId,
   token: String,
   expiresAt: Date,
   used: { type: Boolean, default: false }
 }));
 
-// ================= HEALTH =================
+// ================= HEALTH CHECK =================
 app.get("/", (req, res) => {
-  res.send("API Running 🚀");
+  res.status(200).send("API Running 🚀");
 });
 
 // ================= REGISTER =================
@@ -84,7 +72,7 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-// ================= FORGOT PASSWORD (BREVO FIXED) =================
+// ================= FORGOT PASSWORD (BREVO) =================
 app.post("/api/auth/forgot-password", async (req, res) => {
   try {
     const { email } = req.body;
@@ -95,18 +83,14 @@ app.post("/api/auth/forgot-password", async (req, res) => {
     const token = uuidv4();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-    await ResetToken.create({
-      userId: user._id,
-      token,
-      expiresAt
-    });
+    await ResetToken.create({ userId: user._id, token, expiresAt });
 
     const resetLink = `${process.env.CLIENT_URL}/reset-password/${token}`;
 
-    // 🔥 instant response (IMPORTANT)
+    // 🔥 instant response
     res.json({ message: "Reset link sent to email" });
 
-    // ================= BREVO EMAIL =================
+    // 🔥 async email (NO BLOCK)
     axios.post(
       "https://api.brevo.com/v3/smtp/email",
       {
@@ -115,7 +99,7 @@ app.post("/api/auth/forgot-password", async (req, res) => {
           email: process.env.SENDER_EMAIL
         },
         to: [{ email }],
-        subject: "Reset Your Password",
+        subject: "Reset Password",
         htmlContent: `
           <h2>Reset Password</h2>
           <p>Click below:</p>
@@ -130,10 +114,7 @@ app.post("/api/auth/forgot-password", async (req, res) => {
       }
     )
     .then(() => console.log("✅ Email sent"))
-    .catch(err => {
-      console.log("❌ EMAIL ERROR:");
-      console.log(err.response?.data || err.message);
-    });
+    .catch(err => console.log("❌ EMAIL ERROR:", err.response?.data || err.message));
 
   } catch (err) {
     console.log("❌ Forgot Error:", err.message);
@@ -189,6 +170,18 @@ app.post("/api/auth/reset-password", async (req, res) => {
   }
 });
 
-// ================= START =================
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`🚀 Server running on ${PORT}`));
+// ================= CONNECT DB + START SERVER =================
+mongoose.connect(process.env.MONGODB_URI)
+  .then(() => {
+    console.log("✅ MongoDB Connected");
+
+    const PORT = process.env.PORT || 10000;
+
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`🚀 Server running on ${PORT}`);
+    });
+
+  })
+  .catch(err => {
+    console.log("❌ MongoDB Error:", err);
+  });
