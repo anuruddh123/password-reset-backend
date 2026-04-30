@@ -16,24 +16,24 @@ const allowedOrigins = [
 ];
 
 app.use(cors({
-  origin: (origin, callback) => {
+  origin: function (origin, callback) {
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, true);
-    return callback(null, false);
+    return callback(null, true); // 🔥 allow all for debugging (later lock it)
   }
 }));
 
 app.use(express.json());
 
-// ================= DATABASE =================
+// ================= DB =================
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => console.log("✅ MongoDB Connected"))
-  .catch(err => console.error("❌ Mongo Error:", err));
+  .catch(err => console.log("❌ Mongo Error:", err));
 
 // ================= MODELS =================
 const User = mongoose.model('User', new mongoose.Schema({
-  email: { type: String, required: true, unique: true },
-  password: { type: String, required: true }
+  email: String,
+  password: String
 }));
 
 const ResetToken = mongoose.model('ResetToken', new mongoose.Schema({
@@ -43,10 +43,47 @@ const ResetToken = mongoose.model('ResetToken', new mongoose.Schema({
   used: { type: Boolean, default: false }
 }));
 
-// ================= ROUTES =================
+// ================= HEALTH =================
+app.get("/", (req, res) => {
+  res.send("API Running 🚀");
+});
 
-// 🔹 Forgot Password (FINAL FIX)
-app.post('/api/auth/forgot-password', async (req, res) => {
+// ================= REGISTER =================
+app.post("/api/auth/register", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    const exist = await User.findOne({ email });
+    if (exist) return res.status(409).json({ error: "User exists" });
+
+    const hash = await bcrypt.hash(password, 10);
+    await User.create({ email, password: hash });
+
+    res.json({ message: "Registered successfully" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= LOGIN =================
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    const user = await User.findOne({ email });
+    if (!user) return res.status(401).json({ error: "Invalid credentials" });
+
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) return res.status(401).json({ error: "Invalid credentials" });
+
+    res.json({ message: "Login successful" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= FORGOT PASSWORD (BREVO API) =================
+app.post("/api/auth/forgot-password", async (req, res) => {
   try {
     const { email } = req.body;
 
@@ -56,23 +93,27 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     const token = uuidv4();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-    await ResetToken.create({ userId: user._id, token, expiresAt });
+    await ResetToken.create({
+      userId: user._id,
+      token,
+      expiresAt
+    });
 
     const resetLink = `${process.env.CLIENT_URL}/reset-password/${token}`;
 
-    // ✅ instant response
+    // 🔥 send response instantly
     res.json({ message: "Reset link sent to email" });
 
-    // ✅ EMAIL via Brevo API
-    await axios.post(
+    // ================= BREVO EMAIL =================
+    axios.post(
       "https://api.brevo.com/v3/smtp/email",
       {
         sender: {
-          name: "Password Reset",
+          name: "Password Reset App",
           email: process.env.SENDER_EMAIL
         },
         to: [{ email }],
-        subject: "Password Reset",
+        subject: "Reset Your Password",
         htmlContent: `
           <h2>Password Reset</h2>
           <p>Click below to reset your password:</p>
@@ -85,26 +126,26 @@ app.post('/api/auth/forgot-password', async (req, res) => {
           "Content-Type": "application/json"
         }
       }
-    );
-
-    console.log("✅ Email sent via API");
+    ).then(() => {
+      console.log("✅ Email sent via Brevo");
+    }).catch(err => {
+      console.log("❌ Email Error:", err.response?.data || err.message);
+    });
 
   } catch (err) {
-    console.error("❌ MAIL ERROR:", {
-      message: err.message,
-      data: err.response?.data
-    });
+    console.log("❌ Forgot Error:", err.message);
   }
 });
 
-// 🔹 Verify Token
-app.post('/api/auth/verify-token', async (req, res) => {
+// ================= VERIFY TOKEN =================
+app.post("/api/auth/verify-token", async (req, res) => {
   try {
     const { token } = req.body;
 
     const data = await ResetToken.findOne({ token, used: false });
 
     if (!data) return res.status(404).json({ error: "Invalid token" });
+
     if (new Date() > data.expiresAt)
       return res.status(401).json({ error: "Token expired" });
 
@@ -115,22 +156,22 @@ app.post('/api/auth/verify-token', async (req, res) => {
   }
 });
 
-// 🔹 Reset Password
-app.post('/api/auth/reset-password', async (req, res) => {
+// ================= RESET PASSWORD =================
+app.post("/api/auth/reset-password", async (req, res) => {
   try {
     const { token, newPassword } = req.body;
 
     const data = await ResetToken.findOne({ token, used: false });
 
     if (!data) return res.status(404).json({ error: "Invalid token" });
+
     if (new Date() > data.expiresAt)
       return res.status(401).json({ error: "Token expired" });
 
     const user = await User.findById(data.userId);
 
     const same = await bcrypt.compare(newPassword, user.password);
-    if (same)
-      return res.status(400).json({ error: "Use different password" });
+    if (same) return res.status(400).json({ error: "Use different password" });
 
     user.password = await bcrypt.hash(newPassword, 10);
     await user.save();
@@ -145,48 +186,6 @@ app.post('/api/auth/reset-password', async (req, res) => {
   }
 });
 
-// 🔹 Register
-app.post('/api/auth/register', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-
-    if (await User.findOne({ email }))
-      return res.status(409).json({ error: "User exists" });
-
-    await User.create({
-      email,
-      password: await bcrypt.hash(password, 10)
-    });
-
-    res.json({ message: "Registered successfully" });
-
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// 🔹 Login
-app.post('/api/auth/login', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-
-    const user = await User.findOne({ email });
-    if (!user) return res.status(401).json({ error: "Invalid credentials" });
-
-    if (!(await bcrypt.compare(password, user.password)))
-      return res.status(401).json({ error: "Invalid credentials" });
-
-    res.json({ message: "Login successful" });
-
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// 🔹 Health
-app.get('/', (req, res) => {
-  res.send("API Running 🚀");
-});
-
+// ================= START =================
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on ${PORT}`));
