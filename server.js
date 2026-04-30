@@ -1,0 +1,192 @@
+const express = require('express');
+const cors = require('cors');
+const dotenv = require('dotenv');
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+const { v4: uuidv4 } = require('uuid');
+const axios = require('axios');
+
+dotenv.config();
+const app = express();
+
+// ================= CORS =================
+const allowedOrigins = [
+  "http://localhost:3000",
+  "https://pas-reset.netlify.app"
+];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(null, false);
+  }
+}));
+
+app.use(express.json());
+
+// ================= DATABASE =================
+mongoose.connect(process.env.MONGODB_URI)
+  .then(() => console.log("✅ MongoDB Connected"))
+  .catch(err => console.error("❌ Mongo Error:", err));
+
+// ================= MODELS =================
+const User = mongoose.model('User', new mongoose.Schema({
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true }
+}));
+
+const ResetToken = mongoose.model('ResetToken', new mongoose.Schema({
+  userId: mongoose.Schema.Types.ObjectId,
+  token: String,
+  expiresAt: Date,
+  used: { type: Boolean, default: false }
+}));
+
+// ================= ROUTES =================
+
+// 🔹 Forgot Password (FINAL FIX)
+app.post('/api/auth/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    const user = await User.findOne({ email });
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const token = uuidv4();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+    await ResetToken.create({ userId: user._id, token, expiresAt });
+
+    const resetLink = `${process.env.CLIENT_URL}/reset-password/${token}`;
+
+    // ✅ instant response
+    res.json({ message: "Reset link sent to email" });
+
+    // ✅ EMAIL via Brevo API
+    await axios.post(
+      "https://api.brevo.com/v3/smtp/email",
+      {
+        sender: {
+          name: "Password Reset",
+          email: process.env.SENDER_EMAIL
+        },
+        to: [{ email }],
+        subject: "Password Reset",
+        htmlContent: `
+          <h2>Password Reset</h2>
+          <p>Click below to reset your password:</p>
+          <a href="${resetLink}">${resetLink}</a>
+        `
+      },
+      {
+        headers: {
+          "api-key": process.env.BREVO_API_KEY,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    console.log("✅ Email sent via API");
+
+  } catch (err) {
+    console.error("❌ MAIL ERROR:", {
+      message: err.message,
+      data: err.response?.data
+    });
+  }
+});
+
+// 🔹 Verify Token
+app.post('/api/auth/verify-token', async (req, res) => {
+  try {
+    const { token } = req.body;
+
+    const data = await ResetToken.findOne({ token, used: false });
+
+    if (!data) return res.status(404).json({ error: "Invalid token" });
+    if (new Date() > data.expiresAt)
+      return res.status(401).json({ error: "Token expired" });
+
+    res.json({ message: "Valid token" });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 🔹 Reset Password
+app.post('/api/auth/reset-password', async (req, res) => {
+  try {
+    const { token, newPassword } = req.body;
+
+    const data = await ResetToken.findOne({ token, used: false });
+
+    if (!data) return res.status(404).json({ error: "Invalid token" });
+    if (new Date() > data.expiresAt)
+      return res.status(401).json({ error: "Token expired" });
+
+    const user = await User.findById(data.userId);
+
+    const same = await bcrypt.compare(newPassword, user.password);
+    if (same)
+      return res.status(400).json({ error: "Use different password" });
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
+
+    data.used = true;
+    await data.save();
+
+    res.json({ message: "Password reset successful" });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 🔹 Register
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (await User.findOne({ email }))
+      return res.status(409).json({ error: "User exists" });
+
+    await User.create({
+      email,
+      password: await bcrypt.hash(password, 10)
+    });
+
+    res.json({ message: "Registered successfully" });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 🔹 Login
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    const user = await User.findOne({ email });
+    if (!user) return res.status(401).json({ error: "Invalid credentials" });
+
+    if (!(await bcrypt.compare(password, user.password)))
+      return res.status(401).json({ error: "Invalid credentials" });
+
+    res.json({ message: "Login successful" });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 🔹 Health
+app.get('/', (req, res) => {
+  res.send("API Running 🚀");
+});
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`🚀 Server running on ${PORT}`));
