@@ -9,7 +9,7 @@ const axios = require('axios');
 dotenv.config();
 const app = express();
 
-// ================= CORS =================
+// ================= CORS (FIXED) =================
 const allowedOrigins = [
   "http://localhost:3000",
   "https://pas-reset.netlify.app"
@@ -19,7 +19,7 @@ app.use(cors({
   origin: function (origin, callback) {
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, true);
-    return callback(null, true); // 🔥 allow all for debugging (later lock it)
+    return callback(null, true); // dev mode open
   }
 }));
 
@@ -60,6 +60,7 @@ app.post("/api/auth/register", async (req, res) => {
     await User.create({ email, password: hash });
 
     res.json({ message: "Registered successfully" });
+
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -77,12 +78,13 @@ app.post("/api/auth/login", async (req, res) => {
     if (!match) return res.status(401).json({ error: "Invalid credentials" });
 
     res.json({ message: "Login successful" });
+
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// ================= FORGOT PASSWORD (BREVO API) =================
+// ================= FORGOT PASSWORD (BREVO FIXED) =================
 app.post("/api/auth/forgot-password", async (req, res) => {
   try {
     const { email } = req.body;
@@ -101,7 +103,7 @@ app.post("/api/auth/forgot-password", async (req, res) => {
 
     const resetLink = `${process.env.CLIENT_URL}/reset-password/${token}`;
 
-    // 🔥 send response instantly
+    // 🔥 instant response (IMPORTANT)
     res.json({ message: "Reset link sent to email" });
 
     // ================= BREVO EMAIL =================
@@ -115,8 +117,8 @@ app.post("/api/auth/forgot-password", async (req, res) => {
         to: [{ email }],
         subject: "Reset Your Password",
         htmlContent: `
-          <h2>Password Reset</h2>
-          <p>Click below to reset your password:</p>
+          <h2>Reset Password</h2>
+          <p>Click below:</p>
           <a href="${resetLink}">${resetLink}</a>
         `
       },
@@ -126,10 +128,11 @@ app.post("/api/auth/forgot-password", async (req, res) => {
           "Content-Type": "application/json"
         }
       }
-    ).then(() => {
-      console.log("✅ Email sent via Brevo");
-    }).catch(err => {
-      console.log("❌ Email Error:", err.response?.data || err.message);
+    )
+    .then(() => console.log("✅ Email sent"))
+    .catch(err => {
+      console.log("❌ EMAIL ERROR:");
+      console.log(err.response?.data || err.message);
     });
 
   } catch (err) {
